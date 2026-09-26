@@ -57,5 +57,11 @@ defmodule Sprout.Pipe do
     %{state | suppress: false}
   end
 
+  defp handle_line("TURN", state) do
+    Sprout.PubSub.broadcast(:turn_started)
+
+    state
+  end
+
   defp handle_line(_line, state), do: state
 end

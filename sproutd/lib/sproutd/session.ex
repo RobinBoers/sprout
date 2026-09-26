@@ -117,8 +117,6 @@ defmodule Sproutd.Session do
 
   @impl true
   def handle_info({:stdout, data}, state), do: {:noreply, append(state, data)}
-
-  @impl true
   def handle_info({:stderr, data}, state), do: {:noreply, append(state, data)}
 
   @impl true
@@ -144,22 +142,28 @@ defmodule Sproutd.Session do
   @impl true
   def handle_info({:agent_message, message}, state) do
     Logger.info("agent message: #{inspect(message)}", sid: state.sid)
+
     {:noreply, state}
   end
 
   @impl true
   def handle_info({:agent_error, error}, state) do
     Logger.error("agent error: #{inspect(error)}", sid: state.sid)
+
     {:noreply, state}
   end
 
   @impl true
   def handle_info({:agent_retry, attempt, max}, state) do
     Logger.warning("agent retrying (#{attempt}/#{max})", sid: state.sid)
+
     {:noreply, state}
   end
 
   @impl true
+  def handle_info(:turn_started, state), do: {:noreply, state}
+  def handle_info({:agent_progress, _phase}, state), do: {:noreply, state}
+  def handle_info({:agent_delta, _text}, state), do: {:noreply, state}
   def handle_info({:tool_call, _id, _tool, _args}, state), do: {:noreply, state}
 
   @impl true

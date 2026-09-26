@@ -76,8 +76,20 @@ defmodule Sprout.Shell do
 
       if [ "$SPROUT_TURN" = "1" ]; then
         PS1=""
+        printf "TURN\n" >&3
 
-        while IFS= read -r line <&4; do
+        trap : INT
+
+        while :; do
+          IFS= read -r line <&4
+          status=$?
+
+          if [ $status -gt 128 ]; then
+            continue
+          elif [ $status -ne 0 ]; then
+            break
+          fi
+
           case "$line" in
             "RUN "*)
               cmd="${line#RUN }"
@@ -91,6 +103,7 @@ defmodule Sprout.Shell do
           esac
         done
 
+        trap - INT
         PS1="$REAL_PS1"
       fi
     }
@@ -110,6 +123,10 @@ defmodule Sprout.Shell do
     """
     [ -f "$REAL_ZDOTDIR/.zshrc" ] && source "$REAL_ZDOTDIR"/.zshrc
 
+    # We need partial lines on the terminal for spinner ticks and streamed text.
+    # zsh's "missing newline" mark fucks with those, so disable it here.
+    PROMPT_EOL_MARK=""
+
     REAL_PROMPT="$PROMPT"
 
     exec 3>#{pipe}
@@ -123,22 +140,35 @@ defmodule Sprout.Shell do
 
       if [ "$SPROUT_TURN" = "1" ]; then
         PROMPT=""
+        turn_done=""
+        print -u3 "TURN"
 
-        while IFS= read -r line <&4; do
-          case "$line" in
-            "RUN "*)
-              cmd="${line#RUN }"
-              print -u3 "START $cmd"
-              eval "$cmd"
-              print -u3 "END $?"
-              ;;
-            "DONE")
-              break
-              ;;
-          esac
-        done
-
-        PROMPT="$REAL_PROMPT"
+        {
+          while IFS= read -r line <&4; do
+            case "$line" in
+              "RUN "*)
+                cmd="${line#RUN }"
+                print -u3 "START $cmd"
+                eval "$cmd"
+                print -u3 "END $?"
+                ;;
+              "DONE")
+                turn_done=1
+                break
+                ;;
+            esac
+          done
+        } always {
+          {
+            if [ -z "$turn_done" ]; then
+              while IFS= read -r line <&4; do
+                [ "$line" = "DONE" ] && break
+              done
+            fi
+          } always {
+            PROMPT="$REAL_PROMPT"
+          }
+        }
       fi
     }
     preexec_functions+=(sprout_preexec)

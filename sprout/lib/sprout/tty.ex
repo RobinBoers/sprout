@@ -9,12 +9,17 @@ defmodule Sprout.TTY do
     GenServer.start_link(__MODULE__, opts, name: __MODULE__)
   end
 
-  @spec write(iodata()) :: :ok
-  def write(data) do
-    GenServer.cast(__MODULE__, {:write, data})
+  @spec write(iodata(), [{:redraw, boolean()}]) :: :ok
+  def write(data, opts \\ []) do
+    GenServer.cast(__MODULE__, {:write, data, Keyword.get(opts, :redraw, false)})
   end
 
-  @spec read() :: String.t()
+  @spec clear() :: :ok
+  def clear do
+    GenServer.cast(__MODULE__, :clear)
+  end
+
+  @spec read() :: {:ok, String.t()} | {:error, :cancelled}
   def read do
     GenServer.call(__MODULE__, :read, :infinity)
   end
@@ -33,8 +38,16 @@ defmodule Sprout.TTY do
   end
 
   @impl true
-  def handle_cast({:write, data}, %{port: port} = state) do
-    Port.command(port, normalize_newlines(data))
+  def handle_cast({:write, data, redraw}, %{port: port} = state) do
+    prefix = if redraw, do: "\r#{IO.ANSI.clear_line()}", else: ""
+    Port.command(port, normalize_newlines(prefix <> IO.iodata_to_binary(data)))
+
+    {:noreply, state}
+  end
+
+  @impl true
+  def handle_cast(:clear, %{port: port} = state) do
+    Port.command(port, "\r#{IO.ANSI.clear_line()}")
 
     {:noreply, state}
   end
@@ -61,6 +74,15 @@ defmodule Sprout.TTY do
   end
 
   @impl true
+  def handle_info({port, {:data, <<3>>}}, %{port: port, mode: {:capture, from, _acc, before}} = state) do
+    Port.command(port, "^C\r\n")
+    Sprout.Client.interrupt(ProcessTree.get(:cid))
+    GenServer.reply(from, {:error, :cancelled})
+
+    {:noreply, %{state | mode: before}}
+  end
+
+  @impl true
   def handle_info({port, {:data, data}}, %{port: port, mode: {:capture, from, acc, before}} = state) do
     Port.command(port, data)
 
@@ -69,7 +91,7 @@ defmodule Sprout.TTY do
         {:noreply, %{state | mode: {:capture, from, acc <> chunk, before}}}
 
       [chunk, rest] ->
-        GenServer.reply(from, acc <> chunk)
+        GenServer.reply(from, {:ok, acc <> chunk})
         send(self(), {port, {:data, rest}})
         {:noreply, %{state | mode: before}}
     end

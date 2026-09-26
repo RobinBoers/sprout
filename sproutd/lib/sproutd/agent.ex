@@ -3,7 +3,9 @@ defmodule Sproutd.Agent do
 
   @type state :: term()
   @type event ::
-          {:agent_message, String.t()}
+          {:agent_progress, :connecting | :thinking | :generating}
+          | {:agent_delta, String.t()}
+          | {:agent_message, String.t()}
           | {:agent_error, String.t()}
           | {:agent_retry, pos_integer(), pos_integer()}
           | {:tool_call, String.t(), atom(), map()}

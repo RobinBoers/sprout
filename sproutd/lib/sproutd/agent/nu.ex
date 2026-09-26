@@ -8,7 +8,7 @@ defmodule Sproutd.Agent.Nu do
 
   import ReqLLM.Context
 
-  @max_steps 20
+  @max_steps 100
   @max_retries 3
 
   def model do
@@ -116,28 +116,38 @@ defmodule Sproutd.Agent.Nu do
   @impl true
   def handle_info({:DOWN, ref, :process, _pid, reason}, %{task: %Task{ref: ref}} = state) do
     Logger.error("generation task crashed: #{inspect(reason)}", sid: state.sid)
-    Sproutd.Agent.emit(state.sid, {:agent_error, "internal error: #{inspect(reason)}"})
+    Sproutd.Agent.emit(state.sid, {:agent_error, "Internal error: #{inspect(reason)}"})
 
     {:noreply, %{state | task: nil}}
   end
 
   @impl true
   def handle_user_interruption(state) do
-    Sproutd.Agent.emit(state.sid, {:agent_error, "cancelled by user"})
+    Logger.error("generation interrupted by user", sid: state.sid)
+    Sproutd.Agent.emit(state.sid, {:agent_error, "Interrupted."})
 
     if state.task do
       Task.shutdown(state.task, :brutal_kill)
     end
 
-    %{state | task: nil}
+    # Cancelling the turn also cancels all pending tool calls.
+    context =
+      Enum.reduce(state.pending, state.context, fn {id, tool}, context ->
+        ReqLLM.Context.append(
+          context,
+          tool_result(id, Atom.to_string(tool), format_tool_result({:error, "interrupted by user"}))
+        )
+      end)
+
+    %{state | task: nil, pending: %{}, context: context}
   end
 
   defp generate_with_retry(state, attempt \\ 1) do
-    case ReqLLM.generate_text(model(), state.context, tools: tools()) do
-      {:ok, response} ->
-        {:ok, response}
+    case run_stream(state) do
+      {:ok, result} ->
+        {:ok, result}
 
-      {:error, reason} when attempt < @max_retries ->
+      {:error, reason, false} when attempt < @max_retries ->
         Logger.warning(
           "generation attempt #{attempt}/#{@max_retries} failed, retrying: #{inspect(reason)}",
           sid: state.sid
@@ -147,57 +157,122 @@ defmodule Sproutd.Agent.Nu do
         Process.sleep(500 * attempt)
         generate_with_retry(state, attempt + 1)
 
-      {:error, reason} ->
+      {:error, reason, true} ->
         {:error, reason}
     end
   end
 
-  defp handle_response(state, response) do
-    case ReqLLM.Response.tool_calls(response) do
-      [] ->
-        text = ReqLLM.Response.text(response)
-        context = ReqLLM.Context.append(state.context, assistant(text))
-        Sproutd.Agent.emit(state.sid, {:agent_message, text})
-        %{state | context: context}
+  defp run_stream(state) do
+    Sproutd.Agent.emit(state.sid, {:agent_progress, :connecting})
 
-      calls ->
-        context = ReqLLM.Context.append(state.context, response.message)
-        state = %{state | context: context}
-
-        {known, unknown} =
-          calls
-          |> Enum.map(&{&1, resolve_tool(ReqLLM.ToolCall.name(&1))})
-          |> Enum.split_with(fn {_call, tool} -> tool end)
-
-        state =
-          Enum.reduce(unknown, state, fn {call, nil}, state ->
-            name = ReqLLM.ToolCall.name(call)
-            Logger.warning("agent requested unknown tool #{inspect(name)}", sid: state.sid)
-            message = "unknown tool #{inspect(name)}"
-            context = ReqLLM.Context.append(state.context, tool_result(call.id, name, message))
-            %{state | context: context}
-          end)
-
-        pending = Map.new(known, fn {call, tool} -> {call.id, tool} end)
-        state = %{state | pending: Map.merge(state.pending, pending)}
-
-        Enum.each(known, fn {call, tool} ->
-          args = ReqLLM.ToolCall.args_map(call) || %{}
-          Logger.info("dispatching #{tool} tool call #{call.id}: #{inspect(args)}", sid: state.sid)
-          Sproutd.Agent.emit(state.sid, {:tool_call, call.id, tool, args})
-        end)
-
-        if map_size(state.pending) == 0 do
-          generate_response(state)
-        else
-          state
-        end
+    case ReqLLM.stream_text(model(), state.context, tools: tools()) do
+      {:ok, stream_response} -> consume_stream(state.sid, stream_response)
+      {:error, reason} -> {:error, reason, false}
     end
   end
 
-  defp accumulate_usage(state, response) do
-    usage = ReqLLM.Response.usage(response) || %{}
+  defp consume_stream(sid, stream_response) do
+    stream_response
+    |> ReqLLM.StreamResponse.events()
+    |> Enum.reduce_while(%{phase: :connecting, text: [], tool_calls: []}, &handle_stream_event(sid, &1, &2))
+    |> case do
+      {:finish, acc} ->
+        {:ok,
+         %{
+           text: acc.text |> Enum.reverse() |> IO.iodata_to_binary(),
+           tool_calls: Enum.reverse(acc.tool_calls),
+           usage: ReqLLM.StreamResponse.usage(stream_response)
+         }}
 
+      {:error, reason, partial?} ->
+        {:error, reason, partial?}
+    end
+  end
+
+  defp handle_stream_event(sid, %ReqLLM.StreamEvent{type: :start}, acc) do
+    # :start means connection was established. Some providers do not
+    # stream reasoning/thinking indicators after this, so assume thinking
+    # has started, at least until an indicator arrives.
+
+    {:cont, maybe_emit_phase(sid, acc, :thinking)}
+  end
+
+  defp handle_stream_event(sid, %ReqLLM.StreamEvent{type: :reasoning_delta}, acc) do
+    {:cont, maybe_emit_phase(sid, acc, :thinking)}
+  end
+
+  defp handle_stream_event(sid, %ReqLLM.StreamEvent{type: :text_delta, data: text}, acc) do
+    acc = maybe_emit_phase(sid, acc, :generating)
+    Sproutd.Agent.emit(sid, {:agent_delta, text})
+    {:cont, %{acc | text: [text | acc.text]}}
+  end
+
+  defp handle_stream_event(_sid, %ReqLLM.StreamEvent{type: :tool_call, data: call}, acc) do
+    {:cont, %{acc | tool_calls: [call | acc.tool_calls]}}
+  end
+
+  defp handle_stream_event(_sid, %ReqLLM.StreamEvent{type: :finish}, acc) do
+    {:halt, {:finish, acc}}
+  end
+
+  defp handle_stream_event(_sid, %ReqLLM.StreamEvent{type: :cancelled}, acc) do
+    {:halt, {:error, :cancelled, acc.phase != :connecting}}
+  end
+
+  defp handle_stream_event(_sid, %ReqLLM.StreamEvent{type: :error, data: reason}, acc) do
+    {:halt, {:error, reason, acc.phase != :connecting}}
+  end
+
+  defp handle_stream_event(_sid, %ReqLLM.StreamEvent{}, acc), do: {:cont, acc}
+
+  defp maybe_emit_phase(_sid, %{phase: phase} = acc, phase), do: acc
+
+  defp maybe_emit_phase(sid, acc, phase) do
+    Sproutd.Agent.emit(sid, {:agent_progress, phase})
+    %{acc | phase: phase}
+  end
+
+  defp handle_response(state, %{text: text, tool_calls: []} = _result) do
+    context = ReqLLM.Context.append(state.context, assistant(text))
+    Sproutd.Agent.emit(state.sid, {:agent_message, text})
+    %{state | context: context}
+  end
+
+  defp handle_response(state, %{text: text, tool_calls: calls}) do
+    tool_calls = Enum.map(calls, &{&1.name, &1.arguments, id: &1.id})
+    context = ReqLLM.Context.append(state.context, assistant(text, tool_calls: tool_calls))
+    state = %{state | context: context}
+
+    {known, unknown} =
+      calls
+      |> Enum.map(&{&1, resolve_tool(&1.name)})
+      |> Enum.split_with(fn {_call, tool} -> tool end)
+
+    state =
+      Enum.reduce(unknown, state, fn {call, nil}, state ->
+        Logger.warning("agent requested unknown tool #{inspect(call.name)}", sid: state.sid)
+        message = "unknown tool #{inspect(call.name)}"
+        context = ReqLLM.Context.append(state.context, tool_result(call.id, call.name, message))
+        %{state | context: context}
+      end)
+
+    pending = Map.new(known, fn {call, tool} -> {call.id, tool} end)
+    state = %{state | pending: Map.merge(state.pending, pending)}
+
+    Enum.each(known, fn {call, tool} ->
+      args = call.arguments || %{}
+      Logger.info("dispatching #{tool} tool call #{call.id}: #{inspect(args)}", sid: state.sid)
+      Sproutd.Agent.emit(state.sid, {:tool_call, call.id, tool, args})
+    end)
+
+    if map_size(state.pending) == 0 do
+      generate_response(state)
+    else
+      state
+    end
+  end
+
+  defp accumulate_usage(state, usage) do
     delta = %{
       input_tokens: usage[:input_tokens] || 0,
       output_tokens: usage[:output_tokens] || 0,
