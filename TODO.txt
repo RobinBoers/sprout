@@ -1,0 +1,5 @@
+- speed up startup
+- multi-session?
+- parallel tool calls?
+- transcripts / resume?
+- amp backend?
