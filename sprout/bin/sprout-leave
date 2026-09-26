@@ -1,0 +1,71 @@
+#!/bin/sh
+# Detaches this shell from whatever session(s) it's attached to.
+
+. "$(dirname "$0")/common.sh"
+
+: "${SPROUT_SOCK:?SPROUT_SOCK is not set}"
+
+if [ -t 1 ] && [ -z "${NO_COLOR:-}" ]; then
+	c_leaf1=$(printf '\033[1;38;5;154m')
+	c_leaf2=$(printf '\033[1;38;5;34m')
+	c_pot1=$(printf '\033[38;5;179m')
+	c_pot2=$(printf '\033[38;5;136m')
+	c_pot3=$(printf '\033[38;5;94m')
+	c_gray=$(printf '\033[90m')
+	c_reset=$(printf '\033[0m')
+else
+	c_leaf1=
+	c_leaf2=
+	c_pot1=
+	c_pot2=
+	c_pot3=
+	c_gray=
+	c_reset=
+fi
+
+print_bye() {
+	duration="$1"
+	tokens="$2"
+	input="$3"
+	output="$4"
+	cost="$5"
+
+	mins=$((duration / 60))
+	secs=$((duration % 60))
+	if [ "$mins" -gt 0 ]; then
+		time="${mins}m ${secs}s"
+	else
+		time="${secs}s"
+	fi
+
+	dollars=$((cost / 100))
+	cents=$((cost % 100))
+
+	stats="$time · $tokens tok · ~\$$(printf '%d.%02d' "$dollars" "$cents")"
+
+	printf '\n'
+	printf '%s%-13s%s\n' "$c_leaf1" "   o'" "$c_reset"
+	printf '%s%-13s%sbyeee! %ssprout%s is no longer watching your terminal.\n' "$c_leaf2" " .oo.Oo." "$c_reset" "$c_leaf2" "$c_reset"
+	printf '%s%-13sbye bye bye%s\n' "$c_gray" "    O." "$c_reset"
+	printf '%s  ___%sO%s___%4s%s\n' "$c_pot1" "$c_gray" "$c_pot1" "" "$c_reset"
+	printf '%s%-13s%s%s\n' "$c_pot2" "  \\     /" "$c_reset" "$stats"
+	printf '%s%-13s%s\n' "$c_pot3" "   \\___/" "$c_reset"
+	printf '\n'
+}
+
+print_error() {
+	printf '%ssprout:%s %s\n' "$c_gray" "$c_reset" "$1" >&2
+}
+
+response=$(sprout_socket_send "$SPROUT_SOCK" "leave")
+
+case "$response" in
+	"bye "*)
+		set -- ${response#bye }
+		print_bye "$1" "$2" "$3" "$4" "$5"
+		;;
+	*)
+		print_error "$response"
+		exit 1
+		;;
+esac

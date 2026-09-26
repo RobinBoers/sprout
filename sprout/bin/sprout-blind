@@ -1,0 +1,8 @@
+#!/bin/sh
+# Stops streaming command output to any attached session, until sprout-unblind.
+
+. "$(dirname "$0")/common.sh"
+
+: "${SPROUT_SOCK:?SPROUT_SOCK is not set}"
+
+sprout_socket_send "$SPROUT_SOCK" "blind"

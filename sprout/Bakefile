@@ -1,0 +1,15 @@
+#!/bin/bash
+
+use elixir
+
+export ERL_FLAGS="-noshell -noinput"
+
+shell() {
+	export SPROUT_AGENT="nu"
+	export SPROUT_MODEL="gpt-5.6-sol"
+	export SPROUT_INTERACTIVE=true
+
+	unset SPROUT_SOCK
+
+	elixir --sname "sprout-$$" --erl "$ERL_FLAGS" -S mix run --no-halt
+}

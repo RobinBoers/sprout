@@ -1,0 +1,12 @@
+#!/bin/bash
+
+use elixir
+
+export REQ_LLM_OAUTH_FILE="$HOME/nu.json"
+
+daemon() {
+	export SPROUT_AGENT="nu"
+	export SPROUT_MODEL="gpt-5.6-sol"
+
+	elixir --sname sproutd -S mix run --no-halt
+}

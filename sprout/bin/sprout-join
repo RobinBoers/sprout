@@ -1,0 +1,57 @@
+#!/bin/sh
+# Creates a new sprout session and attaches this shell to it.
+
+. "$(dirname "$0")/common.sh"
+
+: "${SPROUT_SOCK:?SPROUT_SOCK is not set}"
+
+if [ -t 1 ] && [ -z "${NO_COLOR:-}" ]; then
+	c_leaf1=$(printf '\033[1;38;5;154m')
+	c_leaf2=$(printf '\033[1;38;5;34m')
+	c_pot1=$(printf '\033[38;5;179m')
+	c_pot2=$(printf '\033[38;5;136m')
+	c_pot3=$(printf '\033[38;5;94m')
+	c_gray=$(printf '\033[90m')
+	c_reset=$(printf '\033[0m')
+else
+	c_leaf1=
+	c_leaf2=
+	c_pot1=
+	c_pot2=
+	c_pot3=
+	c_gray=
+	c_reset=
+fi
+
+print_welcome() {
+	sid="$1"
+
+	meta="${c_gray}sid:${c_reset} $sid"
+	[ -n "${SPROUT_AGENT:-}" ] && meta="$meta · ${c_gray}agent:${c_reset} $SPROUT_AGENT"
+	[ -n "${SPROUT_MODEL:-}" ] && meta="$meta · ${c_gray}model:${c_reset} $SPROUT_MODEL"
+
+	printf '\n'
+	printf '%s%-13s%s\n' "$c_leaf1" "   o'" "$c_reset"
+	printf '%s%-13s%shiii! %ssprout%s is now watching your terminal.\n' "$c_leaf2" " .oo.Oo." "$c_reset" "$c_leaf2" "$c_reset"
+	printf '%s%-13sask it any question, type '\''#'\'' to enter chat mode%s\n' "$c_gray" "    O." "$c_reset"
+	printf '%s  ___%sO%s___%4s%s\n' "$c_pot1" "$c_gray" "$c_pot1" "" "$c_reset"
+	printf '%s%-13s%s%s\n' "$c_pot2" "  \\     /" "$c_reset" "$meta"
+	printf '%s%-13s%s\n' "$c_pot3" "   \\___/" "$c_reset"
+	printf '\n'
+}
+
+print_error() {
+	printf '%ssprout:%s %s\n' "$c_gray" "$c_reset" "$1" >&2
+}
+
+response=$(sprout_socket_send "$SPROUT_SOCK" "join")
+
+case "$response" in
+	"sid "*)
+		print_welcome "${response#sid }"
+		;;
+	*)
+		print_error "$response"
+		exit 1
+		;;
+esac

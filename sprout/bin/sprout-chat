@@ -1,0 +1,29 @@
+#!/bin/sh
+# Sends a message to this shell's attached session(s).
+
+. "$(dirname "$0")/common.sh"
+
+: "${SPROUT_SOCK:?SPROUT_SOCK is not set}"
+: "${1:?Usage: $(basename "$0") <message>}"
+
+if [ -t 1 ] && [ -z "${NO_COLOR:-}" ]; then
+	c_gray=$(printf '\033[90m')
+	c_reset=$(printf '\033[0m')
+else
+	c_gray=
+	c_reset=
+fi
+
+print_error() {
+	printf '%ssprout:%s %s\n' "$c_gray" "$c_reset" "$1" >&2
+}
+
+response=$(sprout_socket_send "$SPROUT_SOCK" "chat $1")
+
+case "$response" in
+	ok) ;;
+	*)
+		print_error "$response"
+		exit 1
+		;;
+esac
