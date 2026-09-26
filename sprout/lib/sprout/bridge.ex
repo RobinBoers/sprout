@@ -4,7 +4,7 @@ defmodule Sprout.Bridge do
   """
   use GenServer
 
-  @available_tools [:bash, :edit, :read]
+  @available_tools ~w(bash edit read list find search)a
   def available_tools, do: @available_tools
 
   @spec start_link(keyword()) :: GenServer.on_start()
@@ -104,6 +104,70 @@ defmodule Sprout.Bridge do
 
       {:error, reason} ->
         Sprout.TTY.write("#{error_marker()} Error reading #{Path.basename(path)}#{range_suffix(args)}\n")
+        Sprout.PubSub.broadcast({:tool_result, id, {:error, reason}})
+    end
+
+    {:noreply, state}
+  end
+
+  def handle_info({:tool_call, id, :list, args}, state) do
+    state = close_output(state)
+    path = Map.get(args, "path", ".")
+
+    case File.ls(path) do
+      {:ok, entries} ->
+        listing =
+          entries
+          |> Enum.sort()
+          |> Enum.map(&annotate_entry(path, &1))
+          |> Enum.join("\n")
+
+        Sprout.TTY.write("#{agent_marker()} List #{path}\n")
+        Sprout.PubSub.broadcast({:tool_result, id, {:ok, listing}})
+
+      {:error, reason} ->
+        Sprout.TTY.write("#{error_marker()} Error listing #{path}\n")
+        Sprout.PubSub.broadcast({:tool_result, id, {:error, reason}})
+    end
+
+    {:noreply, state}
+  end
+
+  def handle_info({:tool_call, id, :find, %{"pattern" => pattern} = args}, state) do
+    state = close_output(state)
+    path = Map.get(args, "path", ".")
+
+    matches =
+      path
+      |> Path.join(pattern)
+      |> Path.wildcard(match_dot: true)
+      |> Enum.sort()
+
+    Sprout.TTY.write("#{agent_marker()} Find #{pattern}#{path_suffix(path)}\n")
+    Sprout.PubSub.broadcast({:tool_result, id, {:ok, Enum.join(matches, "\n")}})
+
+    {:noreply, state}
+  end
+
+  def handle_info({:tool_call, id, :search, %{"pattern" => pattern} = args}, state) do
+    state = close_output(state)
+    path = Map.get(args, "path", ".")
+    glob = Map.get(args, "glob", "**/*")
+
+    case Regex.compile(pattern) do
+      {:ok, regex} ->
+        matches =
+          path
+          |> Path.join(glob)
+          |> Path.wildcard(match_dot: true)
+          |> Enum.filter(&File.regular?/1)
+          |> Enum.flat_map(&grep_file(&1, regex))
+
+        Sprout.TTY.write("#{agent_marker()} Search #{pattern}#{path_suffix(path)}\n")
+        Sprout.PubSub.broadcast({:tool_result, id, {:ok, Enum.join(matches, "\n")}})
+
+      {:error, {reason, _pos}} ->
+        Sprout.TTY.write("#{error_marker()} Malformed pattern #{inspect(pattern)}\n")
         Sprout.PubSub.broadcast({:tool_result, id, {:error, reason}})
     end
 
@@ -234,6 +298,20 @@ defmodule Sprout.Bridge do
     end
   end
 
+  defp annotate_entry(path, entry) do
+    if File.dir?(Path.join(path, entry)), do: entry <> "/", else: entry
+  end
+
+  defp grep_file(path, regex) do
+    path
+    |> File.stream!()
+    |> Stream.with_index(1)
+    |> Stream.filter(fn {line, _n} -> Regex.match?(regex, line) end)
+    |> Enum.map(fn {line, n} -> "#{path}:#{n}: #{String.trim_trailing(line)}" end)
+  rescue
+    File.Error -> []
+  end
+
   # String helpers
 
   defp affirmative?(response) do
@@ -287,6 +365,9 @@ defmodule Sprout.Bridge do
   end
 
   defp range_suffix(_args), do: ""
+
+  defp path_suffix("."), do: ""
+  defp path_suffix(path), do: " #{IO.ANSI.light_black()}in #{path}#{IO.ANSI.reset()}"
 
   defp spinner_animation(phase, frame, started_at) do
     elapsed_ms = System.convert_time_unit(System.monotonic_time() - started_at, :native, :millisecond)

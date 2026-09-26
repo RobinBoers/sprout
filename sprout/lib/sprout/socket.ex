@@ -61,8 +61,8 @@ defmodule Sprout.Socket do
 
   defp handle_event("leave") do
     case Sprout.Client.leave() do
-      {:ok, usage} ->
-        "bye #{usage.duration} #{usage.total_tokens} #{usage.input_tokens} #{usage.output_tokens} #{usage.cost}"
+      {:ok, sids, usage} ->
+        "bye #{usage.duration} #{usage.total_tokens} #{usage.input_tokens} #{usage.output_tokens} #{usage.cost} #{Enum.join(sids, ",")}"
 
       {:error, :not_attached} ->
         "not attached to any session (run /join or /attach first)"

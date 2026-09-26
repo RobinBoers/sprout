@@ -29,6 +29,7 @@ print_bye() {
 	input="$3"
 	output="$4"
 	cost="$5"
+	sids="$6"
 
 	mins=$((duration / 60))
 	secs=$((duration % 60))
@@ -42,11 +43,12 @@ print_bye() {
 	cents=$((cost % 100))
 
 	stats="$time · $tokens tok · ~\$$(printf '%d.%02d' "$dollars" "$cents")"
+	resume="${c_gray}resume with +resume $sids${c_reset}"
 
 	printf '\n'
 	printf '%s%-13s%s\n' "$c_leaf1" "   o'" "$c_reset"
 	printf '%s%-13s%sbyeee! %ssprout%s is no longer watching your terminal.\n' "$c_leaf2" " .oo.Oo." "$c_reset" "$c_leaf2" "$c_reset"
-	printf '%s%-13sbye bye bye%s\n' "$c_gray" "    O." "$c_reset"
+	printf '%s%-13s%s%s\n' "$c_gray" "    O." "$c_reset" "$resume"
 	printf '%s  ___%sO%s___%4s%s\n' "$c_pot1" "$c_gray" "$c_pot1" "" "$c_reset"
 	printf '%s%-13s%s%s\n' "$c_pot2" "  \\     /" "$c_reset" "$stats"
 	printf '%s%-13s%s\n' "$c_pot3" "   \\___/" "$c_reset"
@@ -62,7 +64,7 @@ response=$(sprout_socket_send "$SPROUT_SOCK" "leave")
 case "$response" in
 	"bye "*)
 		set -- ${response#bye }
-		print_bye "$1" "$2" "$3" "$4" "$5"
+		print_bye "$1" "$2" "$3" "$4" "$5" "$6"
 		;;
 	*)
 		print_error "$response"

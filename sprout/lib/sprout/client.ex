@@ -17,7 +17,7 @@ defmodule Sprout.Client do
     GenServer.call(__MODULE__, {:attach, sid})
   end
 
-  @spec leave() :: {:ok, map()} | {:error, :not_attached}
+  @spec leave() :: {:ok, [Sprout.sid()], map()} | {:error, :not_attached}
   def leave do
     GenServer.call(__MODULE__, :leave)
   end
@@ -78,7 +78,7 @@ defmodule Sprout.Client do
             end
         end
 
-      {:reply, {:ok, usage}, sync(%{state | sids: MapSet.new()})}
+      {:reply, {:ok, MapSet.to_list(state.sids), usage}, sync(%{state | sids: MapSet.new()})}
     end
   end
 

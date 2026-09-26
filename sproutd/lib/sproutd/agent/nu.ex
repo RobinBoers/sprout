@@ -16,17 +16,15 @@ defmodule Sproutd.Agent.Nu do
   end
 
   def system_prompt do
-    "You are sprout, an agent in the user's terminal."
+    "You are sprout, an agent in the user's terminal. You read along, and when asked, you can run commands, directly in the user's terminal. You share this terminal together. You can see the user's commands + output, the user can see yours. Prefer using dedicated tools (find tool, read tool, list tool, search tool) over shell commands when possible. Try to keep the commands you do use understandable for the user, and be mindful not to flood the terminal with output."
   end
-
-  @usage_keys ~w(input_tokens output_tokens total_tokens cost)a
 
   @impl true
   def init(sid) do
     {:ok, %{
       sid: sid,
       context: ReqLLM.Context.new([system(system_prompt())]),
-      usage: Map.new(@usage_keys, &{&1, 0}),
+      usage: Sprout.empty_usage(),
       pending: %{},
       steps: 0,
       task: nil
@@ -320,6 +318,33 @@ defmodule Sproutd.Agent.Nu do
         parameter_schema: [
           path: [type: :string, required: true, doc: "File path"],
           content: [type: :string, required: true, doc: "New file content"]
+        ],
+        callback: {__MODULE__, :unused_callback, []}
+      ),
+      ReqLLM.tool(
+        name: "list",
+        description: "List directory contents",
+        parameter_schema: [
+          path: [type: :string, required: false, doc: "Directory to list (default: cwd)"]
+        ],
+        callback: {__MODULE__, :unused_callback, []}
+      ),
+      ReqLLM.tool(
+        name: "find",
+        description: "Find files by glob pattern",
+        parameter_schema: [
+          pattern: [type: :string, required: true, doc: "Glob pattern (e.g. \"**/*.ex\")"],
+          path: [type: :string, required: false, doc: "Directory to search from (default: cwd)"]
+        ],
+        callback: {__MODULE__, :unused_callback, []}
+      ),
+      ReqLLM.tool(
+        name: "search",
+        description: "Search file contents for a regular expression",
+        parameter_schema: [
+          pattern: [type: :string, required: true, doc: "Regular expression to search for"],
+          path: [type: :string, required: false, doc: "Directory to search from (default: cwd)"],
+          glob: [type: :string, required: false, doc: "Glob pattern to filter files (default: \"**/*\")"]
         ],
         callback: {__MODULE__, :unused_callback, []}
       )
