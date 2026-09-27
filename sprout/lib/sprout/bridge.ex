@@ -74,25 +74,44 @@ defmodule Sprout.Bridge do
     {:noreply, state}
   end
 
-  def handle_info({:tool_call, id, :edit, %{"path" => path, "content" => content}}, state) do
+  def handle_info({:tool_call, id, :edit, %{"path" => path, "content" => new_content}}, state) do
     state = close_output(state)
 
     # TODO(robin): this File.read! in here can still crash unexpectedly. add error handling.
     old_content = opportunistically_read_file!(path)
-    {added, removed} = line_diff(old_content, content)
 
-    case File.write(path, content) do
-      :ok ->
-        Sprout.TTY.write("#{agent_marker()} Wrote #{Path.basename(path)} #{diff_suffix(added, removed)}\n")
-        Sprout.PubSub.broadcast({:tool_result, id, :ok})
+    if Sprout.VSCode.available?() do
+      case Sprout.VSCode.request_edit(path, old_content, new_content) do
+        {:ok, :accepted} ->
+          attempt_write(id, path, old_content, new_content, :accepted)
 
-      {:error, reason} ->
-        Sprout.TTY.write("#{error_marker()} Error writing #{Path.basename(path)} +#{added} -#{removed}\n")
-        Sprout.PubSub.broadcast({:tool_result, id, {:error, reason}})
+        {:ok, :edited, new_content} ->
+          attempt_write(id, path, old_content, new_content, :edited)
+
+        {:error, :rejected} ->
+          Sprout.PubSub.broadcast({:tool_result, id, {:error, :rejected}})
+
+        {:error, reason} ->
+          Sprout.TTY.write("#{error_marker()} VSCode error: #{inspect(reason)}\n")
+          Sprout.PubSub.broadcast({:tool_result, id, {:error, reason}})
+      end
+    else
+      render_diff(path, old_content, new_content)
+
+      Sprout.TTY.write("Approve? [Y/n] ")
+
+      with {:ok, response} <- Sprout.TTY.read() do
+        if affirmative?(response) do
+          attempt_write(id, path, old_content, new_content, :accepted)
+        else
+          Sprout.PubSub.broadcast({:tool_result, id, {:error, :rejected}})
+        end
+      end
     end
 
     {:noreply, state}
   end
+
 
   def handle_info({:tool_call, id, :read, %{"path" => path} = args}, state) do
     state = close_output(state)
@@ -232,6 +251,25 @@ defmodule Sprout.Bridge do
   def handle_info({:leave, _cid}, state), do: {:noreply, state}
   def handle_info({:tool_result, _id, _result}, state), do: {:noreply, state}
 
+  # Edits
+
+  defp attempt_write(id, path, old_content, new_content, outcome) do
+    case File.write(path, new_content) do
+      :ok ->
+        {added, removed} = line_diff(old_content, new_content)
+
+        Sprout.TTY.write("#{agent_marker()} Wrote #{Path.basename(path)} #{diff_suffix(added, removed)}\n")
+        Sprout.PubSub.broadcast({:tool_result, id, tool_result(outcome, new_content)})
+
+      {:error, reason} ->
+        Sprout.TTY.write("#{error_marker()} Error writing #{Path.basename(path)}\n")
+        Sprout.PubSub.broadcast({:tool_result, id, {:error, reason}})
+    end
+  end
+
+  defp tool_result(:accepted, _content), do: {:ok, :accepted}
+  defp tool_result(:edited, content), do: {:ok, :edited, content}
+
   # Spinner and typewriter
 
   defp ensure_spinner(%{spinner: nil} = state, phase) do
@@ -286,6 +324,37 @@ defmodule Sprout.Bridge do
     end
 
     %{state | mode: :waiting}
+  end
+
+  # Diff helpers
+
+  defp render_diff(path, old_content, new_content) do
+    old_lines = String.split(old_content, "\n")
+    new_lines = String.split(new_content, "\n")
+
+    diff = List.myers_difference(old_lines, new_lines)
+
+    {added, removed} =
+      Enum.reduce(diff, {0, 0}, fn
+        {:ins, lines}, {added, removed} -> {added + length(lines), removed}
+        {:del, lines}, {added, removed} -> {added, removed + length(lines)}
+        {:eq, _lines}, acc -> acc
+      end)
+
+    Sprout.TTY.write("#{agent_marker()} Edit #{Path.basename(path)} #{diff_suffix(added, removed)}\n")
+
+    if added == 0 and removed == 0 do
+      Sprout.TTY.write("  No changes.\n")
+    else
+      Enum.each(diff, fn
+        {:ins, lines} ->
+          Enum.each(lines, &Sprout.TTY.write("  #{IO.ANSI.green()}+#{IO.ANSI.reset()} #{&1}\n"))
+        {:del, lines} ->
+          Enum.each(lines, &Sprout.TTY.write("  #{IO.ANSI.red()}-#{IO.ANSI.reset()} #{&1}\n"))
+        {:eq, _lines} ->
+          :pass
+      end)
+    end
   end
 
   # File helpers

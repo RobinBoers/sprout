@@ -1,0 +1,49 @@
+{
+  "name": "sprout-vscode",
+  "displayName": "Sprout",
+  "version": "0.1.0",
+  "description": "Companion extension for Sprout, the cute terminal agent.",
+  "repository": {
+    "type": "git",
+    "url": "git+https://git.dupunkto.org/axcelott/sprout.git"
+  },
+  "bugs": {
+    "url": "https://bugs.dupunkto.org/axcelott/sprout"
+  },
+  "author": "Robijntje",
+  "publisher": "RobinBoers",
+  "license": "Unlicense",
+  "categories": [
+    "Other"
+  ],
+  "keywords": [
+    "agent",
+    "cli",
+    "terminal"
+  ],
+  "engines": {
+    "vscode": "^1.75.0"
+  },
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "main": "./out/extension.js",
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "pretest": "npm run compile && npm run lint",
+    "lint": "eslint src --ext ts"
+  },
+  "devDependencies": {
+    "@types/node": "^20.17.10",
+    "@types/vscode": "^1.75.0",
+    "@typescript-eslint/eslint-plugin": "^8.13.0",
+    "@typescript-eslint/parser": "^8.13.0",
+    "eslint": "^8.56.0",
+    "typescript": "^5.6.3"
+  },
+  "dependencies": {
+    "net": "^1.0.2"
+  }
+}
