@@ -242,13 +242,22 @@ defmodule Sprout.Bridge do
     {:noreply, state}
   end
 
+  def handle_info({:interrupt, _cid}, state) do
+    state = close_output(state)
+
+    Sprout.Env.put("SPROUT_TURN", "0")
+    Sprout.Relay.done()
+    Sprout.TTY.unlock()
+
+    {:noreply, %{state | mode: :idle, pending_phase: nil}}
+  end
+
   def handle_info({:stdout, _data}, state), do: {:noreply, state}
   def handle_info({:stderr, _data}, state), do: {:noreply, state}
   def handle_info({:cmd_start, _cmd}, state), do: {:noreply, state}
   def handle_info({:cmd_end, _code}, state), do: {:noreply, state}
 
   def handle_info({:user_message, _message}, state), do: {:noreply, state}
-  def handle_info({:interrupt, _cid}, state), do: {:noreply, state}
   def handle_info({:leave, _cid}, state), do: {:noreply, state}
   def handle_info({:tool_result, _id, _result}, state), do: {:noreply, state}
 
