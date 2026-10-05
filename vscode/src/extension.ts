@@ -2,14 +2,9 @@ import * as vscode from "vscode";
 import * as net from "net";
 import * as path from "path";
 import * as fs from "fs";
-import * as os from "os";
 
-const SOCKET_PATH = path.join(os.tmpdir(), "sprout-vscode.sock");
-
-interface PendingEdit {
-  client: net.Socket;
-  request: EditRequest;
-}
+// TODO(robin): this should be /var/run or something, according to POSIX, right?
+const SOCKET_PATH = "/tmp/sprout-vscode.sock";
 
 interface EditRequest {
   path: string;
@@ -17,10 +12,27 @@ interface EditRequest {
   newContent: string;
 }
 
-const queue: PendingEdit[] = [];
-let draining = false;
+const DIFF_SCHEME = "sprout-diff";
+
+// Serves the read-only "before" side of the diff; the "after" side is the real file's own buffer.
+class OldContentProvider implements vscode.TextDocumentContentProvider {
+  private content = new Map<string, string>();
+
+  provideTextDocumentContent(uri: vscode.Uri): string {
+    return this.content.get(uri.toString()) ?? "";
+  }
+
+  set(uri: vscode.Uri, content: string) {
+    this.content.set(uri.toString(), content);
+  }
+}
+
+const oldContentProvider = new OldContentProvider();
+let diffCounter = 0;
 
 export function activate(context: vscode.ExtensionContext) {
+  context.subscriptions.push(vscode.workspace.registerTextDocumentContentProvider(DIFF_SCHEME, oldContentProvider));
+
   const server = startServer();
   context.subscriptions.push({ dispose: () => server.close() });
 }
@@ -53,53 +65,26 @@ function handleConnection(client: net.Socket) {
     if (end == -1) return;
 
     const request = decodeRequest(buffer.slice(0, end));
-    if (request) enqueue(client, request);
+    if (request) resolveEdit(client, request);
   });
 
   client.on("error", (err) => console.error("sprout-vscode: client socket error", err));
 }
 
-// Queue
+// Edit workflow: cmd+s on the diff tab approves, cmd+w rejects.
 
-function enqueue(client: net.Socket, request: EditRequest) {
-  const pending: PendingEdit = { client, request };
-
-  queue.push(pending);
-  client.once("close", () => removePending(pending));
-
-  drainQueue();
-}
-
-function removePending(pending: PendingEdit) {
-  const index = queue.indexOf(pending);
-  if (index != -1) queue.splice(index, 1);
-}
-
-async function drainQueue() {
-  if (draining) return;
-  draining = true;
-
-  let next: PendingEdit | undefined;
-  while ((next = queue.shift())) {
-    await resolveEdit(next.client, next.request);
-  }
-
-  draining = false;
-}
-
-// Edit workflow
+type Decision = { outcome: "accepted" } | { outcome: "edited"; content: string } | { outcome: "rejected" };
 
 async function resolveEdit(client: net.Socket, request: EditRequest) {
   try {
-    const { document, editor } = await presentEdit(request);
-    const choice = await promptForApproval(request);
+    const document = await presentEdit(request);
+    const decision = await waitForDecision(document, request);
 
-    if (choice == "Accept") {
+    if (decision.outcome == "accepted") {
       respond(client, "ACCEPTED\n");
-    } else if (choice == "Accept with changes") {
-      respond(client, `EDITED|${encode(editor.document.getText())}\n`);
+    } else if (decision.outcome == "edited") {
+      respond(client, `EDITED|${encode(decision.content)}\n`);
     } else {
-      await replaceContent(document, request.oldContent);
       respond(client, "REJECTED\n");
     }
   } catch (err) {
@@ -108,7 +93,7 @@ async function resolveEdit(client: net.Socket, request: EditRequest) {
   }
 }
 
-async function presentEdit(request: EditRequest) {
+async function presentEdit(request: EditRequest): Promise<vscode.TextDocument> {
   const uri = vscode.Uri.file(request.path);
 
   const document = await vscode.workspace.openTextDocument(uri).then(
@@ -116,26 +101,61 @@ async function presentEdit(request: EditRequest) {
     () => vscode.workspace.openTextDocument({ content: request.oldContent }),
   );
 
-  const editor = await vscode.window.showTextDocument(document, {
-    preview: false,
-    viewColumn: vscode.ViewColumn.Active,
-  });
-
   await replaceContent(document, request.newContent);
 
-  return { document, editor };
+  diffCounter++;
+  const oldUri = vscode.Uri.parse(`${DIFF_SCHEME}:/${diffCounter}-${path.basename(request.path)}`);
+  oldContentProvider.set(oldUri, request.oldContent);
+
+  await vscode.commands.executeCommand(
+    "vscode.diff",
+    oldUri,
+    document.uri,
+    `${path.basename(request.path)} — proposed edit`,
+    { preview: false, preserveFocus: true },
+  );
+
+  return document;
 }
 
-function promptForApproval(request: EditRequest) {
-  const detail = `File: ${path.basename(request.path)}\nChanges: ${describeChanges(request)}`;
+function waitForDecision(document: vscode.TextDocument, request: EditRequest): Promise<Decision> {
+  return new Promise((resolve) => {
+    let settled = false;
 
-  return vscode.window.showInformationMessage(
-    "Approve this edit?",
-    { modal: false, detail },
-    "Accept",
-    "Accept with changes",
-    "Reject",
-  );
+    const settle = (decision: Decision) => {
+      if (settled) return;
+      settled = true;
+      saveListener.dispose();
+      tabListener.dispose();
+      resolve(decision);
+    };
+
+    const saveListener = vscode.workspace.onDidSaveTextDocument((doc) => {
+      if (doc.uri.toString() != document.uri.toString()) return;
+
+      const content = doc.getText();
+      settle(content == request.newContent ? { outcome: "accepted" } : { outcome: "edited", content });
+      closeDiffTab(document.uri);
+    });
+
+    const tabListener = vscode.window.tabGroups.onDidChangeTabs((event) => {
+      const closedOurs = event.closed.some(
+        (tab) => tab.input instanceof vscode.TabInputTextDiff && tab.input.modified.toString() == document.uri.toString(),
+      );
+      if (closedOurs) settle({ outcome: "rejected" });
+    });
+  });
+}
+
+async function closeDiffTab(modifiedUri: vscode.Uri) {
+  for (const group of vscode.window.tabGroups.all) {
+    for (const tab of group.tabs) {
+      if (tab.input instanceof vscode.TabInputTextDiff && tab.input.modified.toString() == modifiedUri.toString()) {
+        await vscode.window.tabGroups.close(tab);
+        return;
+      }
+    }
+  }
 }
 
 async function replaceContent(document: vscode.TextDocument, content: string) {
@@ -151,13 +171,6 @@ function fullRange(document: vscode.TextDocument): vscode.Range {
 
 function respond(client: net.Socket, message: string) {
   if (!client.destroyed) client.write(message);
-}
-
-function describeChanges({ oldContent, newContent }: EditRequest): string {
-  const diff = newContent.split("\n").length - oldContent.split("\n").length;
-
-  if (diff == 0) return "No line count change";
-  return diff > 0 ? `+${diff} lines` : `${diff} lines`;
 }
 
 // Protocol

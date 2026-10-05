@@ -66,8 +66,8 @@ defmodule Sprout.Bridge do
       if affirmative?(response) do
         Sprout.Relay.dispatch(cmd)
       else
-        Sprout.TTY.write("#{error_marker()} Approval denied.\n")
-        Sprout.PubSub.broadcast({:tool_result, id, {:error, "user declined to run this command"}})
+        Sprout.TTY.write("#{error_marker()} Rejected.\n")
+        Sprout.PubSub.broadcast({:tool_result, id, {:error, :rejected}})
       end
     end
 
@@ -83,12 +83,13 @@ defmodule Sprout.Bridge do
     if Sprout.VSCode.available?() do
       case Sprout.VSCode.request_edit(path, old_content, new_content) do
         {:ok, :accepted} ->
-          attempt_write(id, path, old_content, new_content, :accepted)
+          report_write(id, path, old_content, new_content, :accepted)
 
         {:ok, :edited, new_content} ->
-          attempt_write(id, path, old_content, new_content, :edited)
+          report_write(id, path, old_content, new_content, :edited)
 
         {:error, :rejected} ->
+          Sprout.TTY.write("#{error_marker()} Rejected.\n")
           Sprout.PubSub.broadcast({:tool_result, id, {:error, :rejected}})
 
         {:error, reason} ->
@@ -104,6 +105,7 @@ defmodule Sprout.Bridge do
         if affirmative?(response) do
           attempt_write(id, path, old_content, new_content, :accepted)
         else
+          Sprout.TTY.write("#{error_marker()} Rejected.\n")
           Sprout.PubSub.broadcast({:tool_result, id, {:error, :rejected}})
         end
       end
@@ -111,7 +113,6 @@ defmodule Sprout.Bridge do
 
     {:noreply, state}
   end
-
 
   def handle_info({:tool_call, id, :read, %{"path" => path} = args}, state) do
     state = close_output(state)
@@ -253,18 +254,28 @@ defmodule Sprout.Bridge do
 
   # Edits
 
+  # TODO(robin): clean this up. i dont like:
+  # - the asymetry between the branches.
+  # - the fact that attempt_write is used only once
+  # - that attempt_write has the exact same arguments as report_write
+  # - the single-use tiny tool_result function
+
   defp attempt_write(id, path, old_content, new_content, outcome) do
     case File.write(path, new_content) do
       :ok ->
-        {added, removed} = line_diff(old_content, new_content)
-
-        Sprout.TTY.write("#{agent_marker()} Wrote #{Path.basename(path)} #{diff_suffix(added, removed)}\n")
-        Sprout.PubSub.broadcast({:tool_result, id, tool_result(outcome, new_content)})
+        report_write(id, path, old_content, new_content, outcome)
 
       {:error, reason} ->
         Sprout.TTY.write("#{error_marker()} Error writing #{Path.basename(path)}\n")
         Sprout.PubSub.broadcast({:tool_result, id, {:error, reason}})
     end
+  end
+
+  defp report_write(id, path, old_content, new_content, outcome) do
+    {added, removed} = line_diff(old_content, new_content)
+
+    Sprout.TTY.write("#{agent_marker()} Wrote #{Path.basename(path)} #{diff_suffix(added, removed)}\n")
+    Sprout.PubSub.broadcast({:tool_result, id, tool_result(outcome, new_content)})
   end
 
   defp tool_result(:accepted, _content), do: {:ok, :accepted}

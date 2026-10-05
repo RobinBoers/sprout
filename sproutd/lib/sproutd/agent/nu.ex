@@ -40,27 +40,8 @@ defmodule Sproutd.Agent.Nu do
   @impl true
   def handle_tool_result(state, id, {:error, :rejected}) do
     case Map.pop(state.pending, id) do
-      {nil, _pending} ->
-        state
-
-      {:edit, _pending} ->
-        Logger.info("edit rejected by user, ending turn", sid: state.sid)
-        Sproutd.Agent.emit(state.sid, {:agent_error, "Rejected."})
-
-        if state.task do
-          Task.shutdown(state.task, :brutal_kill)
-        end
-
-        # Mark all pending tools (including this one) cancelled
-        context =
-          Enum.reduce(state.pending, state.context, fn {id, tool}, context ->
-            ReqLLM.Context.append(
-              context,
-              tool_result(id, Atom.to_string(tool), format_tool_result({:error, "turn ended by user"}))
-            )
-          end)
-
-        %{state | task: nil, pending: %{}, context: context}
+      {nil, _pending} -> state
+      {tool, _pending} when tool in [:edit, :bash] -> abort_turn(state)
     end
   end
 
@@ -85,6 +66,25 @@ defmodule Sproutd.Agent.Nu do
           state
         end
     end
+  end
+
+  defp abort_turn(state) do
+    Logger.info("rejected by user, ending turn", sid: state.sid)
+
+    if state.task do
+      Task.shutdown(state.task, :brutal_kill)
+    end
+
+    # Mark all pending tools (including this one) cancelled
+    context =
+      for {id, tool} <- state.pending, reduce: state.context do
+        context -> ReqLLM.Context.append(
+            context,
+            tool_result(id, Atom.to_string(tool), format_tool_result({:error, "turn ended by user"}))
+          )
+      end
+
+    %{state | task: nil, pending: %{}, context: context}
   end
 
   defp format_tool_result({:ok, :accepted}), do: "accepted"
