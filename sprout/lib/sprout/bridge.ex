@@ -237,7 +237,7 @@ defmodule Sprout.Bridge do
   def handle_info({:agent_retry, attempt, max}, state) do
     state = close_output(state)
 
-    Sprout.TTY.write("#{error_marker()} retrying (#{attempt}/#{max})...\n")
+    Sprout.TTY.write("#{error_marker()} Retrying (#{attempt}/#{max})...\n")
 
     {:noreply, state}
   end
