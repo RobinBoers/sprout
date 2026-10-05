@@ -6,7 +6,7 @@ import * as fs from "fs";
 const SCHEME = "sprout";
 
 // TODO(robin): this should be /var/run or something, according to POSIX, right?
-const SOCKET_PATH = "/tmp/sprout-vscode.sock";
+const SOCKET_PATH = "/tmp/sprout.sock";
 
 interface Request {
   path: string;

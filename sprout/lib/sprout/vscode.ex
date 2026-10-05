@@ -4,7 +4,7 @@ defmodule Sprout.VSCode do
   @spec socket_path() :: Path.t()
   def socket_path do
     # TODO(robin): this should be /var/run or something, according to POSIX, right?
-    "/tmp/sprout-vscode.sock"
+    "/tmp/sprout.sock"
   end
 
   @spec available?() :: boolean()

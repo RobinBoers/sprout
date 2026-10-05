@@ -1,5 +1,5 @@
 {
-  "name": "sprout-vscode",
+  "name": "sprout",
   "displayName": "Sprout",
   "version": "0.1.0",
   "description": "Companion extension for Sprout, the cute terminal agent.",
