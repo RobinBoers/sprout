@@ -179,7 +179,7 @@ defmodule Sproutd.Session do
     %{reason: reason} = info |> Map.values() |> List.first()
     Logger.error("agent crashed: #{inspect(reason)}", sid: state.sid)
 
-    Enum.each(state.cids, &Sprout.PubSub.broadcast({:agent_error, "agent crashed, session ending"}, &1))
+    Enum.each(state.cids, &Sprout.PubSub.broadcast({:agent_error, "Agent crashed (session ending)"}, &1))
 
     {:stop, :shutdown, state}
   end

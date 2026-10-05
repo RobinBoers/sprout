@@ -55,7 +55,7 @@ defmodule Sproutd.Agent.Nu do
         context =
           ReqLLM.Context.append(
             state.context,
-            tool_result(id, Atom.to_string(tool), format_tool_result(result))
+            tool_result(id, to_string(tool), format_tool_result(result))
           )
 
         state = %{state | context: context, pending: pending}
@@ -69,22 +69,21 @@ defmodule Sproutd.Agent.Nu do
   end
 
   defp abort_turn(state) do
-    Logger.info("rejected by user, ending turn", sid: state.sid)
+    Logger.info("tool call rejected by user (ending turn)", sid: state.sid)
+    Sproutd.Agent.emit(state.sid, {:agent_error, "Rejected."})
 
     if state.task do
       Task.shutdown(state.task, :brutal_kill)
     end
 
-    # Mark all pending tools (including this one) cancelled
-    context =
-      for {id, tool} <- state.pending, reduce: state.context do
-        context -> ReqLLM.Context.append(
-            context,
-            tool_result(id, Atom.to_string(tool), format_tool_result({:error, "turn ended by user"}))
-          )
-      end
+    %{state | task: nil, pending: %{}, context: cancel_pending_tool_calls(state)}
+  end
 
-    %{state | task: nil, pending: %{}, context: context}
+  defp cancel_pending_tool_calls(state) do
+    for {id, tool} <- state.pending, reduce: state.context do
+      context ->
+        ReqLLM.Context.append(context, tool_result(id, to_string(tool), format_tool_result({:error, "turn ended by user"})))
+    end
   end
 
   defp format_tool_result({:ok, :accepted}), do: "accepted"
@@ -109,7 +108,7 @@ defmodule Sproutd.Agent.Nu do
 
       Sproutd.Agent.emit(
         state.sid,
-        {:agent_error, "stopped after #{@max_steps} steps without answer (loop detection)"}
+        {:agent_error, "Stopped after #{@max_steps} steps (loop detection)"}
       )
 
       state
@@ -134,7 +133,7 @@ defmodule Sproutd.Agent.Nu do
 
       {:error, reason} ->
         Logger.error("generation failed: #{inspect(reason)}", sid: state.sid)
-        Sproutd.Agent.emit(state.sid, {:agent_error, inspect(reason)})
+        Sproutd.Agent.emit(state.sid, {:agent_error, "Agent error: #{inspect(reason)}"})
 
         {:noreply, state}
     end
@@ -157,16 +156,7 @@ defmodule Sproutd.Agent.Nu do
       Task.shutdown(state.task, :brutal_kill)
     end
 
-    # Cancelling the turn also cancels all pending tool calls.
-    context =
-      Enum.reduce(state.pending, state.context, fn {id, tool}, context ->
-        ReqLLM.Context.append(
-          context,
-          tool_result(id, Atom.to_string(tool), format_tool_result({:error, "interrupted by user"}))
-        )
-      end)
-
-    %{state | task: nil, pending: %{}, context: context}
+    %{state | task: nil, pending: %{}, context: cancel_pending_tool_calls(state)}
   end
 
   defp generate_with_retry(state, attempt \\ 1) do
@@ -318,7 +308,7 @@ defmodule Sproutd.Agent.Nu do
   end
 
   defp resolve_tool(name) do
-    Enum.find(Sprout.Bridge.available_tools(), &(Atom.to_string(&1) == name))
+    Enum.find(Sprout.Bridge.available_tools(), &(to_string(&1) == name))
   end
 
   defp tools do
